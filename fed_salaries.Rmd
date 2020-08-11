@@ -1,0 +1,272 @@
+---
+title: "fed salary data"
+author: "Lewis Kirvan"
+date: "3/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r read}
+#scrape 3 shows how I obtained this data
+library(tidyverse)
+
+df <- readr::read_rds("fed_data.rds")
+
+
+
+financial_regulatory_agencies <- c( "FEDERAL FINANCIAL INST. EXAM. COUNCIL"
+                                   , "CONSUMER FINANCIAL PROTECTION BUREAU"
+                                   , "NATIONAL CREDIT UNION ADMINISTRATION"
+                                   , "FEDERAL RESERVE SYSTEM" 
+                                   , "DEPARTMENT OF TREASURY"
+                                   , "SECURITIES AND EXCHANGE COMMISSION"
+                                   , "COMMODITY FUTURES TRADING COMMISSION"
+                                   , "OFC OF COMPTROLLER OF CURRENCY"
+                                   , "FEDERAL DEPOSIT INSURANCE CORPORATION"
+                                   )
+
+short_forms <- tibble(
+  agency = financial_regulatory_agencies
+  , short_form = c(
+    "FFIEC"
+    , "CFPB"
+    , "NCUA"
+    , "CFPB"
+    , "TREAS"
+    , "SEC"
+    , "CFTC"
+    , "OCC"
+    , "FDIC"
+  )
+)
+
+ffr_df <- df %>% 
+  filter(agency %in% financial_regulatory_agencies) %>% 
+  mutate(full_grade = paste0(`pay plan`, "-", grade))  
+
+ffr_df <- left_join(ffr_df, short_forms)
+
+temp <- table(df$location) %>%  as.data.frame()
+
+cfpb_ecdf <- ffr_df %>% 
+  filter(short_form == "CFPB") %>% 
+   filter(grade == "60") %>% 
+  filter(location == "WASHINGTON") %>% 
+  group_by(fy) %>% 
+  select(fy, salary_int) %>% 
+  group_split() %>% 
+  map(~ .$salary_int) %>% 
+  map(ecdf)
+
+quantile(cfpb_ecdf[[4]], .05) 
+
+mutate(is_me = name == "KIRVAN, LEWIS" | name == "KIRVAN, LEWIS MICHAEL"
+           ) %>% 
+  
+
+table(ffr_df$fy, ffr_df$short_form)
+
+fed <- ffr_df %>%  filter(short_form == "FED")
+
+```
+
+
+
+```{r}
+
+# attempt to get gs equivalents for all ffr agencies
+
+which.nearest <- function(vec, match_vec){
+  nearest <- purrr::map_int(vec, ~ which.min( abs(. - match_vec) ))
+  match_vec[nearest]
+}
+
+gs_scale_2019 <- xml2::read_xml("https://www.opm.gov/policy-data-oversight/pay-leave/salaries-wages/salary-tables/xml/2019/GS.xml") %>% 
+  xml2::as_list()
+
+gs_grades <- gs_scale_2019 %>%
+  map_depth(1, "Grades") %>% 
+  # this is a common pattern in parsed xml
+  # wonder if there is a way to "compress xml"
+  flatten() %>% 
+  map_df(
+    function(x){
+      tibble(
+        grade = x$Value
+        , steps = x$Steps)
+      }
+    )  %>% 
+  mutate(
+    annual_salary = map_chr(steps, ~.[["Annual"]][[1]])
+    , step_level = map_chr(steps, ~.[["Value"]][[1]])
+    ) %>%
+  select(
+    -steps
+  )
+  
+# want to use this to compare with gs payband bottoms. 
+bottom_paid_employee <- ffr_df %>% 
+  filter(fy == "2019"
+         , location == "WASHINGTON"
+         , salary_int != 0 ) %>% 
+  select(
+    agency, full_grade, salary_int
+  ) %>% 
+  group_by(agency, full_grade) %>% 
+  top_n( 1, wt = desc(salary_int) )  
+
+locality_pay <- 
+  tibble(
+    agency = "FDIC"
+    , location = "WASHINGTON"
+    , rate = 1.2716) %>% 
+  add_row(
+    agency = "OCC"
+    , location = "WASHINGTON"
+    , rate = 1.211) %>% 
+  add_row(
+    agency = "SEC"
+    , location = "WASHINGTON"
+    , rate = 1.3048) %>% 
+  add_row(
+    agency = "NCUA"
+    , location = "WASHINGTON"
+    , rate = 1.4587) %>% 
+  add_row(
+    agency = "NCUA"
+    , location = "WASHINGTON"
+    , rate = 1.4587) %>% 
+  add_row(
+    agency = "CFTC"
+    , location = "WASHINGTON"
+    , rate = 1.2932
+  ) %>% 
+  add_row(
+    agency = "CFPB"
+    , location = "WASHINGTON"
+    , rate = 1.18
+    )  
+  
+#ffr_df <- left_join(
+#  ffr_df, locality_pay, by = c("agency" = "agency", "location") )  
+  
+```
+
+
+```{r}
+
+grades <- ffr_df %>% 
+  arrange(agency, `pay plan`, grade) %>% 
+  select(agency, full_grade, fy) %>% 
+  group_by(agency, full_grade, fy) %>% 
+  tally()
+
+pay_plan_counts <- ffr_df %>% 
+  group_by(agency, `pay plan`) %>% 
+  tally()
+
+# some paybands that are at lots of agencies are not likely 
+# to be bargaining unit (executives, alj etc.)
+cross_cutting_pay_band <- ffr_df %>% 
+  select(`pay plan`, agency) %>% 
+  distinct() %>% 
+  group_by(`pay plan`) %>% 
+  tally()
+
+cross_cutting_to_remove <- c(
+  "EX"
+  , "EXEC"
+  , "AL"
+  , "ALJ"
+  , "IG"
+  , "SL" #senior level
+
+)
+
+very_small_pay_plans <- ffr_df %>% 
+  group_by(`pay plan`) %>% 
+  tally() %>% 
+  arrange(n) %>% 
+  filter(n < 100) %>% 
+  pull(`pay plan`)
+
+smaller_paybands_to_remove <- c(
+    "CM" #FDIC manager
+    , "TR" # Treasury law enforcement 
+    , "ES" # executive service
+    , "KG" # bureau of engraving
+    , "EM" # FDIC executives
+    , "OR" # treasury office of research
+    , "SO" # Senior SEC
+    , "SS" # Senior NCUA 
+    , "SES" # senior GS pay scale
+    , "WS" # wage scale seniors
+  )
+
+other_things_to_remove <- c(
+  "IR" # irs 
+)
+
+to_remove <- c(
+  very_small_pay_plans
+  , smaller_paybands_to_remove
+  , cross_cutting_to_remove
+  , other_things_to_remove
+  )
+
+# nb <- OCC but shows up as treasury in data
+# all federal reserve are CFPB 
+
+ffr_df <- ffr_df %>% 
+  filter(!`pay plan` %in% to_remove)
+
+summary_stats <- ffr_df %>% filter(salary_int > 0) %>% 
+  filter(fy == "2017") %>% 
+  mutate(full_pay_grade = paste(`pay plan`, grade, sep = "-")) %>% 
+  group_by(agency, full_pay_grade) %>% 
+  summarise(
+    mean = mean(salary_int), 
+    median = median(salary_int),
+    max = max(salary_int),
+    min = min(salary_int),
+    nobs = n())
+  
+cnt_unique <- function(x){
+  length(unique(x))
+}
+
+# find common phrases and words in occupation field
+#this uses a package I wrote, but it's pretty slow probably should 
+#switch to quanteda, don't think I've installed it yet though
+rake_df <- rakeR::rake(unique(ffr_df$occupation), stem = F, top_fraction = 1) %>%
+  group_by(phrases) %>% 
+  tally()
+
+summary_stats_nlevels <- summary_stats %>% 
+  mutate(grade = substr(full_pay_grade, 0, 2)) %>% 
+  group_by(agency, grade) %>% 
+  summarise(leves_in_grade = n()
+            , n_emps = sum(nobs) )
+
+```
+
+```{r}
+
+overall <- df %>% filter(salary_int > 0) %>% 
+  filter(fy == 2019) %>% 
+  mutate(full_pay_grade = paste(`pay plan`, grade, sep = "-")) %>% 
+  group_by(agency) %>% 
+  summarise(
+    mean = mean(salary_int), 
+    median = median(salary_int),
+    max = max(salary_int),
+    min = min(salary_int),
+    nobs = n()) 
+
+
+```
+
